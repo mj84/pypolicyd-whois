@@ -1,0 +1,14 @@
+{
+  "debugLevel": 1,
+  "Min_Registered_Age": "60d",
+  "Registrar_Blacklist": [],
+  "Organization_Blacklist": [],
+  "Nameserver_Blacklist": [],
+  "Domain_Whitelist": [],
+  "DenyAction": "reject",
+  "skip_addresses": [
+    "127.0.0.0/8",
+    "::ffff:127.0.0.0/104",
+    "::1"
+  ]
+}
