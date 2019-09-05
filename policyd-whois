@@ -1,0 +1,171 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+#
+#  Check the sending domain's authoritative nameservers and whois information and provide recommended action back to Postfix.
+#  This is based on pypolicyd-spf: https://launchpad.net/pypolicyd-spf
+#
+#  pypolicyd-whois
+#  Copyright © 2019, Markus Joosten
+'''
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+'''
+
+__version__ = "0.0.1: August 23, 2019"
+
+testing = True
+
+import syslog
+import os
+import sys
+import re
+import socket
+import whois
+import json
+import dns.resolver
+
+syslog.openlog(os.path.basename(sys.argv[0]), syslog.LOG_PID, syslog.LOG_MAIL)
+
+###################################################
+#  load config file  {{{1
+#  Default location:
+configFile = '/etc/python-policyd-whois/policyd-whois.json'
+if len(sys.argv) > 1:
+    if sys.argv[1] in ( '-?', '--help', '-h' ):
+        print('usage: policyd-whois [<configfilename>]')
+        sys.exit(1)
+    configFile = sys.argv[1]
+
+configGlobal = {}
+with open(configFile, 'r') as json_file:
+    configGlobal = json.load(json_file)
+#configGlobal = policydspfsupp._processConfigFile(filename = configFile)
+
+def _whoischeck(data, configData):
+    debug = int(configData['debugLevel'])
+    try:
+        if debug > 4: syslog.syslog('Config: %s' % configData)
+        if debug > 4: syslog.syslog('Request: %s ' % data)
+        sender_domain = data['sender'].split('@')[1]
+        # First we check the sending domain's DNS servers, as this can be done through DNS.
+        sender_domain_nameservers = dns.resolver.query('%s.' % sender_domain, 'NS')
+        for nameserver in sender_domain_nameservers:
+            if nameserver in configData['Nameserver_Blacklist']:
+               syslog.syslog('Authoritative NS %s is denied in configData' % nameserver)
+               return 'reject', 'Mail rejected.'
+        # If no match so far, perform whois lookup
+        sender_domain_whois = whois.whois(sender_domain)
+        if debug > 3: syslog.syslog('Sending domain: %s' % sender_domain)
+        if debug > 3: syslog.syslog('Sending domain whois: %s' % sender_domain_whois)
+        sender_domain_registrar = ''
+        sender_domain_org = ''
+    	if 'registrar' in sender_domain_whois:
+            sender_domain_registrar = sender_domain_whois['registrar']
+            if debug > 3: syslog.syslog('Whois returned registrar %s' % (sender_domain_registrar))
+            if sender_domain_registrar in configData['Registrar_Blacklist']:
+               syslog.syslog('Registrar %s is denied in configData' % sender_domain_registrar)
+               return 'reject', 'Mail rejected.'
+        if 'org' in sender_domain_whois:
+            sender_domain_org = sender_domain_whois['org']
+            if debug > 3: syslog.syslog('Whois returned org %s' % (sender_domain_org))
+            if sender_domain_org in configData['Organization_Blacklist']:
+                syslog.syslog('Organization %s is denied in configData' % sender_domain_org)
+                return 'reject', 'Mail rejected.'
+        syslog.syslog('Sending domain %s from org %s and registrar %s is allowed' % (sender_domain, sender_domain_org, sender_domain_registrar))
+        return('result_only', 'dunno', )
+    except Exception as e:
+        syslog.syslog('Whois returned an exception: %s' % e)
+        return('result_only', 'dunno', )
+
+#  loop reading data  {{{1
+debugLevel = configGlobal['debugLevel']
+if debugLevel >= 3: syslog.syslog('Starting')
+
+data = {}
+lineRx = re.compile(r'^\s*([^=\s]+)\s*=(.*)$')
+while 1:
+    # Python readline assumes ascii here, but sometimes it's not
+    try:
+        lineraw = sys.stdin.buffer.readline()
+        line = lineraw.decode('UTF-8')
+    except AttributeError:
+        # python2.7 compatibility, it doesn't care about ascii or not, but
+        # lacks sys.stid.buffer
+        line = sys.stdin.readline() 
+    if not line: break
+    line = line.rstrip()
+    if debugLevel >= 4: syslog.syslog('Read line: "%s"' % line)
+
+    #  end of entry  {{{2
+    if not line:
+        peruser = False
+        if debugLevel >= 4: syslog.syslog('Found the end of entry')
+        #configData = configGlobal.keys()
+        if not data.get('recipient'):
+            data['recipient'] = 'none'
+        if debugLevel >= 3: syslog.syslog('Config: %s' % str(configGlobal))
+        #  run the checkers  {{{3
+        checkerValue = None
+        checkerReason = None
+        checkerValue, checkerReason = _whoischeck(data, configGlobal)
+
+        #  handle results  {{{3
+        if debugLevel >= 3: syslog.syslog('Action: {0}: Text: {1}'.format(checkerValue, checkerReason))
+        if checkerValue == 'reject':
+            sys.stdout.write('action=550 %s\n\n' % checkerReason)
+
+        elif checkerValue == 'prepend':
+            try:
+                sys.stdout.write('action=prepend %s\n\n' % checkerReason)
+            except UnicodeEncodeError:
+                sys.stdout.write('action=prepend %s\n\n' % str(checkerReason.encode("UTF-8"))[1:].strip("'"))
+
+        elif checkerValue == 'defer':
+            try:
+                sys.stdout.write('action=defer_if_permit %s\n\n' % checkerReason)
+            except UnicodeEncodeError:
+                sys.stdout.write('action=defer_if_permit %s\n\n' % str(checkerReason.encode("UTF-8"))[1:].strip("'"))
+
+        elif checkerValue == 'warn':
+            try:
+                sys.stdout.write('action=warn %s\n\n' % checkerReason)
+            except UnicodeEncodeError:
+                sys.stdout.write('action=warn %s\n\n' % str(checkerReason.encode("UTF-8"))[1:].strip("'"))
+
+        elif checkerValue == 'result_only':
+            try:
+                sys.stdout.write('action=%s\n\n' % checkerReason)
+            except UnicodeEncodeError:
+                sys.stdout.write('action=%s\n\n' % str(checkerReason.encode("UTF-8"))[1:].strip("'"))
+
+        else:
+            sys.stdout.write('action=dunno\n\n')
+
+        #  end of record  {{{3
+        sys.stdout.flush()
+        data = {}
+        continue
+
+    #  parse line  {{{2
+    m = lineRx.match(line)
+    if not m: 
+        syslog.syslog('ERROR: Could not match line "%s"' % line)
+        continue
+
+    #  save the string  {{{2
+    key = m.group(1)
+    value = m.group(2)
+    if key not in [ 'protocol_state', 'protocol_name', 'queue_id' ]:
+        value = value.lower()
+    data[key] = value
+
+if debugLevel >= 3: syslog.syslog('Normal exit')
