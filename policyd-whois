@@ -52,16 +52,26 @@ with open(configFile, 'r') as json_file:
 
 def _whoischeck(data, configData):
     debug = int(configData['debugLevel'])
+    if debug > 4: syslog.syslog('Config: %s' % configData)
+    if debug > 4: syslog.syslog('Request: %s ' % data)
+    sender_domain = data['sender'].split('@')[1]
     try:
-        if debug > 4: syslog.syslog('Config: %s' % configData)
-        if debug > 4: syslog.syslog('Request: %s ' % data)
-        sender_domain = data['sender'].split('@')[1]
         # First we check the sending domain's DNS servers, as this can be done through DNS.
-        sender_domain_nameservers = dns.resolver.query('%s.' % sender_domain, 'NS')
+        sender_domain_nameservers = []
+        found_ns = False
+        while not found_ns:
+            try:
+                sender_domain_nameservers = dns.resolver.query('%s.' % sender_domain, 'NS')
+                found_ns = True
+            except Exception as e:
+                # No authoritative NS for domain, remove the left-most domain part and try again
+                sender_domain = '.'.join(sender_domain.split('.')[1:])
         for nameserver in sender_domain_nameservers:
-            if nameserver in configData['Nameserver_Blacklist']:
-               syslog.syslog('Authoritative NS %s is denied in configData' % nameserver)
-               return 'reject', 'Mail rejected.'
+            if str(nameserver) in configData['Nameserver_Blacklist']:
+                syslog.syslog('Authoritative NS %s is denied in configData' % nameserver)
+                return 'reject', 'Mail rejected.'
+            else:
+                syslog.syslog('Authoritative NS %s is NOT denied in configData' % nameserver)
         # If no match so far, perform whois lookup
         sender_domain_whois = whois.whois(sender_domain)
         if debug > 3: syslog.syslog('Sending domain: %s' % sender_domain)
@@ -83,7 +93,7 @@ def _whoischeck(data, configData):
         syslog.syslog('Sending domain %s from org %s and registrar %s is allowed' % (sender_domain, sender_domain_org, sender_domain_registrar))
         return('result_only', 'dunno', )
     except Exception as e:
-        syslog.syslog('Whois returned an exception: %s' % e)
+        syslog.syslog('Whois returned an exception for domain %s: %s' % (sender_domain, e))
         return('result_only', 'dunno', )
 
 #  loop reading data  {{{1
