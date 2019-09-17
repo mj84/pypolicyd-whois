@@ -7,13 +7,13 @@ If a whois lookup can be made for that domain, its organization and even the reg
 
 A few notes:
 ===
-* This is in no way compatible to any RFC!
+* This is in no way compatible to any RFC, so use this on your own risk!
 * I simply got sick of spammers registering new domains every few days and blast my mailboxes with DKIM-verified, SPF-allowed high quality spam
 
 How to implement:
 ===
 Place policyd-whois to /usr/libexec/postfix/policyd-whois and `chmod +x` the file.
-Create the directory python-policyd-whois, place the policyd-whois.json there.
+Create the directory /etc/python-policyd-whois, place the policyd-whois.json there.
 Put this in your /etc/postfix/master.cf:  
 ~~~
 policy-whois  unix  -       n       n       -       -       spawn
